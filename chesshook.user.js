@@ -39,7 +39,11 @@
     minDelay: 500,
     maxDelay: 2000,
     debugMode: false,
-    showBestMove: true
+    showBestMove: true,
+    engineMode: 'internal',
+    externalEngineUrl: 'ws://localhost:8080/ws',
+    externalPasskey: '',
+    autoReconnect: true
   };
 
   const getSettings = () => {
@@ -92,6 +96,146 @@
     if (fenParts.length === 4) fenParts.push('0');
     if (fenParts.length === 5) fenParts.push('1');
     return fenParts.join(' ');
+  }
+
+  // ============================================
+  // External Engine WebSocket Client
+  // ============================================
+
+  class ExternalEngine {
+    constructor(url, passkey, autoReconnect) {
+      this.url = url;
+      this.passkey = passkey;
+      this.autoReconnect = autoReconnect;
+      this.ws = null;
+      this.onMessageHandler = null;
+      this.isConnected = false;
+      this.isAuthenticated = false;
+      this.isSubscribed = false;
+      this.hasLock = false;
+      this.reconnectAttempts = 0;
+      this.maxReconnectAttempts = 5;
+      this.reconnectDelay = 1000;
+    }
+
+    connect() {
+      try {
+        log(`Connecting to external engine at ${this.url}`);
+        this.ws = new WebSocket(this.url);
+
+        this.ws.onopen = () => {
+          log('External engine connected');
+          this.isConnected = true;
+          this.reconnectAttempts = 0;
+          updateExternalEngineStatus('Connected');
+          
+          // Version check
+          this.send('whoareyou');
+          this.send('whatengine');
+          
+          // Authenticate if passkey provided
+          if (this.passkey) {
+            this.send(`auth ${this.passkey}`);
+          }
+        };
+
+        this.ws.onmessage = (event) => {
+          const message = event.data;
+          debug(`External engine: ${message}`);
+          
+          // Handle protocol messages
+          if (message.startsWith('iam ')) {
+            log(`Server version: ${message.substring(4)}`);
+          } else if (message.startsWith('engine ')) {
+            log(`Engine: ${message.substring(7)}`);
+          } else if (message === 'authok') {
+            log('Authentication successful');
+            this.isAuthenticated = true;
+            updateExternalEngineStatus('Authenticated');
+            // Subscribe to engine output
+            this.send('sub');
+          } else if (message === 'autherr') {
+            log('Authentication failed');
+            updateExternalEngineStatus('Auth failed');
+          } else if (message === 'subok') {
+            log('Subscribed to engine output');
+            this.isSubscribed = true;
+            updateExternalEngineStatus('Subscribed');
+            // Lock the engine for exclusive use
+            this.send('lock');
+          } else if (message === 'suberr') {
+            log('Already subscribed');
+          } else if (message === 'lockok') {
+            log('Engine locked');
+            this.hasLock = true;
+            updateExternalEngineStatus('Ready (Locked)');
+          } else if (message === 'lockerr') {
+            log('Could not lock engine (already locked)');
+            updateExternalEngineStatus('Ready (Not locked)');
+          } else if (message === 'unlockok') {
+            log('Engine unlocked');
+            this.hasLock = false;
+          } else if (message.startsWith('bestmove') || message.startsWith('info')) {
+            // Forward to message handler
+            if (this.onMessageHandler) {
+              this.onMessageHandler(message);
+            }
+          }
+        };
+
+        this.ws.onerror = (error) => {
+          console.error(`[${namespace}] External engine error:`, error);
+          updateExternalEngineStatus('Error');
+        };
+
+        this.ws.onclose = () => {
+          log('External engine disconnected');
+          this.isConnected = false;
+          this.isAuthenticated = false;
+          this.isSubscribed = false;
+          this.hasLock = false;
+          updateExternalEngineStatus('Disconnected');
+          
+          if (this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            const delay = this.reconnectDelay * this.reconnectAttempts;
+            log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            setTimeout(() => this.connect(), delay);
+          }
+        };
+      } catch (e) {
+        console.error(`[${namespace}] Failed to connect to external engine:`, e);
+        updateExternalEngineStatus('Connection failed');
+      }
+    }
+
+    disconnect() {
+      if (this.ws) {
+        if (this.hasLock) {
+          this.send('unlock');
+        }
+        this.autoReconnect = false;
+        this.ws.close();
+        this.ws = null;
+      }
+    }
+
+    send(message) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        debug(`Sending to external engine: ${message}`);
+        this.ws.send(message);
+      } else {
+        debug('Cannot send to external engine: not connected');
+      }
+    }
+
+    postMessage(command) {
+      this.send(command);
+    }
+
+    setOnMessage(handler) {
+      this.onMessageHandler = handler;
+    }
   }
 
   // ============================================
@@ -184,39 +328,76 @@
   
   function initializeChessEngine() {
     try {
-      if (typeof STOCKFISH !== 'function') {
-        log('Waiting for Stockfish to load...');
-        setTimeout(initializeChessEngine, 500);
-        return;
+      if (settings.engineMode === 'external') {
+        initializeExternalEngine();
+      } else {
+        initializeInternalEngine();
       }
-
-      const stockfish = STOCKFISH();
-      
-      stockfish.postMessage("uci");
-      stockfish.postMessage(`setoption name Skill Level value ${settings.skillLevel}`);
-      stockfish.postMessage("setoption name Hash value 16");
-      stockfish.postMessage("setoption name Threads value 1");
-      stockfish.postMessage("ucinewgame");
-
-      chessEngine = {
-        postMessage: function(cmd) {
-          debug(`Engine command: ${cmd}`);
-          stockfish.postMessage(cmd);
-        },
-        setOnMessage: function(handler) {
-          stockfish.onmessage = handler;
-        }
-      };
-
-      setupChessEngineOnMessage();
-      isEngineReady = true;
-      log(`Stockfish engine initialized (Skill Level: ${settings.skillLevel}, Depth: ${settings.depth})`);
-      
-      updateStatusDisplay('Engine Ready');
     } catch (e) {
-      console.error(`[${namespace}] Failed to initialize Stockfish:`, e);
+      console.error(`[${namespace}] Failed to initialize engine:`, e);
       setTimeout(initializeChessEngine, 1000);
     }
+  }
+
+  function initializeInternalEngine() {
+    if (typeof STOCKFISH !== 'function') {
+      log('Waiting for Stockfish to load...');
+      setTimeout(initializeChessEngine, 500);
+      return;
+    }
+
+    const stockfish = STOCKFISH();
+    
+    stockfish.postMessage("uci");
+    stockfish.postMessage(`setoption name Skill Level value ${settings.skillLevel}`);
+    stockfish.postMessage("setoption name Hash value 16");
+    stockfish.postMessage("setoption name Threads value 1");
+    stockfish.postMessage("ucinewgame");
+
+    chessEngine = {
+      postMessage: function(cmd) {
+        debug(`Engine command: ${cmd}`);
+        stockfish.postMessage(cmd);
+      },
+      setOnMessage: function(handler) {
+        stockfish.onmessage = handler;
+      }
+    };
+
+    setupChessEngineOnMessage();
+    isEngineReady = true;
+    log(`Internal Stockfish engine initialized (Skill Level: ${settings.skillLevel}, Depth: ${settings.depth})`);
+    
+    updateStatusDisplay('Engine Ready');
+  }
+
+  function initializeExternalEngine() {
+    const externalEngine = new ExternalEngine(
+      settings.externalEngineUrl,
+      settings.externalPasskey,
+      settings.autoReconnect
+    );
+
+    externalEngine.connect();
+
+    chessEngine = {
+      postMessage: function(cmd) {
+        debug(`Engine command: ${cmd}`);
+        externalEngine.postMessage(cmd);
+      },
+      setOnMessage: function(handler) {
+        externalEngine.setOnMessage(handler);
+      },
+      disconnect: function() {
+        externalEngine.disconnect();
+      }
+    };
+
+    setupChessEngineOnMessage();
+    isEngineReady = true;
+    log(`External engine initialized (URL: ${settings.externalEngineUrl})`);
+    
+    updateStatusDisplay('Engine Ready');
   }
 
   function setupChessEngineOnMessage() {
@@ -474,6 +655,38 @@
           padding: 4px 8px;
           font-size: 11px;
         }
+        .${namespace}_input_wide {
+          width: 150px;
+          background: #2a2a4a;
+          border: 1px solid #4a4a6a;
+          border-radius: 4px;
+          color: #fff;
+          padding: 4px 8px;
+          font-size: 11px;
+        }
+        .${namespace}_select {
+          background: #2a2a4a;
+          border: 1px solid #4a4a6a;
+          border-radius: 4px;
+          color: #fff;
+          padding: 4px 8px;
+          font-size: 11px;
+          cursor: pointer;
+        }
+        #${namespace}_external_status {
+          text-align: center;
+          padding: 6px;
+          background: rgba(255,255,0,0.1);
+          border-radius: 6px;
+          font-size: 11px;
+          color: #ffaa00;
+          margin-bottom: 10px;
+        }
+        .${namespace}_external_section {
+          border-top: 1px solid #4a4a6a;
+          padding-top: 10px;
+          margin-top: 10px;
+        }
         #${namespace}_bestmove {
           text-align: center;
           padding: 12px;
@@ -553,11 +766,47 @@
         <div id="${namespace}_engineinfo"></div>
         
         <div class="${namespace}_row">
+          <span class="${namespace}_label">Engine Mode</span>
+          <select class="${namespace}_select" id="${namespace}_enginemode">
+            <option value="internal" ${settings.engineMode === 'internal' ? 'selected' : ''}>Internal</option>
+            <option value="external" ${settings.engineMode === 'external' ? 'selected' : ''}>External</option>
+          </select>
+        </div>
+        
+        <div id="${namespace}_external_config" class="${namespace}_external_section" style="display: ${settings.engineMode === 'external' ? 'block' : 'none'};">
+          <div id="${namespace}_external_status">Not connected</div>
+          
+          <div class="${namespace}_row">
+            <span class="${namespace}_label">Engine URL</span>
+          </div>
+          <div class="${namespace}_row">
+            <input type="text" class="${namespace}_input_wide" id="${namespace}_external_url" value="${settings.externalEngineUrl}" style="width: 100%;">
+          </div>
+          
+          <div class="${namespace}_row">
+            <span class="${namespace}_label">Passkey</span>
+          </div>
+          <div class="${namespace}_row">
+            <input type="text" class="${namespace}_input_wide" id="${namespace}_external_passkey" value="${settings.externalPasskey}" placeholder="(optional)" style="width: 100%;">
+          </div>
+          
+          <div class="${namespace}_row">
+            <span class="${namespace}_label">Auto Reconnect</span>
+            <div class="${namespace}_toggle ${settings.autoReconnect ? 'active' : ''}" id="${namespace}_autoreconnect_toggle"></div>
+          </div>
+          
+          <div class="${namespace}_buttons">
+            <button class="${namespace}_btn primary" id="${namespace}_connect_btn">Connect</button>
+            <button class="${namespace}_btn danger" id="${namespace}_disconnect_btn">Disconnect</button>
+          </div>
+        </div>
+        
+        <div class="${namespace}_row">
           <span class="${namespace}_label">Auto Move</span>
           <div class="${namespace}_toggle ${settings.autoMove ? 'active' : ''}" id="${namespace}_automove_toggle"></div>
         </div>
         
-        <div class="${namespace}_row">
+        <div class="${namespace}_row" id="${namespace}_skill_row" style="display: ${settings.engineMode === 'internal' ? 'flex' : 'none'};">
           <span class="${namespace}_label">Skill Level</span>
           <input type="range" class="${namespace}_slider" id="${namespace}_skill" min="0" max="20" value="${settings.skillLevel}">
           <span id="${namespace}_skill_val">${settings.skillLevel}</span>
@@ -641,6 +890,77 @@
       const btn = document.getElementById(`${namespace}_minimize`);
       content.classList.toggle('minimized');
       btn.textContent = content.classList.contains('minimized') ? '+' : '−';
+    });
+
+    // Engine mode selector
+    document.getElementById(`${namespace}_enginemode`).addEventListener('change', (e) => {
+      const oldMode = settings.engineMode;
+      settings.engineMode = e.target.value;
+      saveSettings(settings);
+      log(`Engine mode changed to: ${settings.engineMode}`);
+      
+      // Show/hide external config and skill level
+      const externalConfig = document.getElementById(`${namespace}_external_config`);
+      const skillRow = document.getElementById(`${namespace}_skill_row`);
+      if (settings.engineMode === 'external') {
+        externalConfig.style.display = 'block';
+        skillRow.style.display = 'none';
+      } else {
+        externalConfig.style.display = 'none';
+        skillRow.style.display = 'flex';
+      }
+      
+      // Reinitialize engine if mode changed
+      if (oldMode !== settings.engineMode) {
+        if (chessEngine && chessEngine.disconnect) {
+          chessEngine.disconnect();
+        }
+        isEngineReady = false;
+        initializeChessEngine();
+      }
+    });
+
+    // External engine URL
+    document.getElementById(`${namespace}_external_url`).addEventListener('change', (e) => {
+      settings.externalEngineUrl = e.target.value;
+      saveSettings(settings);
+      log(`External engine URL updated: ${settings.externalEngineUrl}`);
+    });
+
+    // External engine passkey
+    document.getElementById(`${namespace}_external_passkey`).addEventListener('change', (e) => {
+      settings.externalPasskey = e.target.value;
+      saveSettings(settings);
+      log('External engine passkey updated');
+    });
+
+    // Auto reconnect toggle
+    document.getElementById(`${namespace}_autoreconnect_toggle`).addEventListener('click', (e) => {
+      e.target.classList.toggle('active');
+      settings.autoReconnect = e.target.classList.contains('active');
+      saveSettings(settings);
+      log(`Auto reconnect: ${settings.autoReconnect ? 'ON' : 'OFF'}`);
+    });
+
+    // Connect button
+    document.getElementById(`${namespace}_connect_btn`).addEventListener('click', () => {
+      if (chessEngine && chessEngine.disconnect) {
+        chessEngine.disconnect();
+      }
+      settings.engineMode = 'external';
+      document.getElementById(`${namespace}_enginemode`).value = 'external';
+      saveSettings(settings);
+      isEngineReady = false;
+      initializeChessEngine();
+    });
+
+    // Disconnect button
+    document.getElementById(`${namespace}_disconnect_btn`).addEventListener('click', () => {
+      if (chessEngine && chessEngine.disconnect) {
+        chessEngine.disconnect();
+        log('Disconnected from external engine');
+        updateExternalEngineStatus('Disconnected');
+      }
     });
 
     // Auto move toggle
@@ -750,6 +1070,25 @@
       // Keep only last 20 messages
       while (element.children.length > 20) {
         element.removeChild(element.firstChild);
+      }
+    }
+  }
+
+  function updateExternalEngineStatus(status) {
+    const element = document.getElementById(`${namespace}_external_status`);
+    if (element) {
+      element.textContent = status;
+      
+      // Update color based on status
+      if (status.includes('Ready') || status.includes('Connected') || status.includes('Authenticated') || status.includes('Subscribed')) {
+        element.style.background = 'rgba(76, 175, 80, 0.2)';
+        element.style.color = '#4caf50';
+      } else if (status.includes('Error') || status.includes('failed') || status.includes('Disconnected')) {
+        element.style.background = 'rgba(244, 67, 54, 0.2)';
+        element.style.color = '#f44336';
+      } else {
+        element.style.background = 'rgba(255, 255, 0, 0.1)';
+        element.style.color = '#ffaa00';
       }
     }
   }

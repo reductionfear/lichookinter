@@ -22,7 +22,8 @@ var (
 	addr     = flag.String("addr", "localhost:8080", "http service address")
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			return r.Header.Get("Origin") == "https://www.chess.com"
+			origin := r.Header.Get("Origin")
+			return origin == "https://www.chess.com" || origin == "https://lichess.org"
 		},
 	}
 	passKey           = randomPassKey()
