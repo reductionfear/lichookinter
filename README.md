@@ -35,7 +35,7 @@ A simple server to run a chess engine and communicate with the chesshook userscr
     - go to the "external" page from the hamburger menu.
         - the top panel will report if you are connected to the server.
         - you should also see some messages like `New ws opened: 127.0.0.1:12345`, `recv: whoareyou`, and `recv: whatengine` in the console.
-        - by default, you will only try to authenticate once your client recieves `autherr` from the server.
+        - by default, you will only try to authenticate once your client receives `autherr` from the server.
         - the client will not try to reconnect to server. you will need to refresh the page or change the engine option to reconnect.
 
 ## WebSocket Connection and Origin Restrictions
@@ -97,13 +97,13 @@ If the user fails to authenticate three times, every attempt will continue to fa
 ```
 message: `sub`
 response: `subok` or `suberr` or `autherr`
-If the server responds with `subok`, the client will recieve all engine output beginning with `bestmove` and `info` through the websocket.
+If the server responds with `subok`, the client will receive all engine output beginning with `bestmove` and `info` through the websocket.
 If the server responds with `suberr`, the client is already subscribed
 If the server responds with `autherr`, the client is expected to provide a passkey, as it is required for read access.  
 
 message: `unsub`
 response: `unsubok` or `unsuberr` or `autherr`
-If the server responds with `unsubok`, the client will no longer recieve engine output.
+If the server responds with `unsubok`, the client will no longer receive engine output.
 If the server responds with `unsuberr`, the client is not subscribed
 If the server responds with `autherr`, the client is expected to provide a passkey, as it is required for read access.  
 ```
@@ -127,5 +127,5 @@ message: `<uci command>`
 response: `autherr`
 If the server responds with `autherr`, the client is expected to provide a passkey, as it is required for write access.  
 
-The client is expected to subscribe to engine output if it would like to recieve engine output.
+The client is expected to subscribe to engine output if it would like to receive engine output.
 ```
