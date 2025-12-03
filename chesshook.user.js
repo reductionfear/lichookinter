@@ -127,7 +127,7 @@
           log('External engine connected');
           this.isConnected = true;
           this.reconnectAttempts = 0;
-          updateExternalEngineStatus('Connected');
+          updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.CONNECTED);
           
           // Version check
           this.send('whoareyou');
@@ -151,16 +151,16 @@
           } else if (message === 'authok') {
             log('Authentication successful');
             this.isAuthenticated = true;
-            updateExternalEngineStatus('Authenticated');
+            updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.AUTHENTICATED);
             // Subscribe to engine output
             this.send('sub');
           } else if (message === 'autherr') {
             log('Authentication failed');
-            updateExternalEngineStatus('Auth failed');
+            updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.AUTH_FAILED);
           } else if (message === 'subok') {
             log('Subscribed to engine output');
             this.isSubscribed = true;
-            updateExternalEngineStatus('Subscribed');
+            updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.SUBSCRIBED);
             // Lock the engine for exclusive use
             this.send('lock');
           } else if (message === 'suberr') {
@@ -168,10 +168,10 @@
           } else if (message === 'lockok') {
             log('Engine locked');
             this.hasLock = true;
-            updateExternalEngineStatus('Ready (Locked)');
+            updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.READY_LOCKED);
           } else if (message === 'lockerr') {
             log('Could not lock engine (already locked)');
-            updateExternalEngineStatus('Ready (Not locked)');
+            updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.READY_NOT_LOCKED);
           } else if (message === 'unlockok') {
             log('Engine unlocked');
             this.hasLock = false;
@@ -185,7 +185,7 @@
 
         this.ws.onerror = (error) => {
           console.error(`[${namespace}] External engine error:`, error);
-          updateExternalEngineStatus('Error');
+          updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.ERROR);
         };
 
         this.ws.onclose = () => {
@@ -194,18 +194,18 @@
           this.isAuthenticated = false;
           this.isSubscribed = false;
           this.hasLock = false;
-          updateExternalEngineStatus('Disconnected');
+          updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.DISCONNECTED);
           
           if (this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            const delay = this.reconnectDelay * this.reconnectAttempts;
+            const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
             log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.connect(), delay);
           }
         };
       } catch (e) {
         console.error(`[${namespace}] Failed to connect to external engine:`, e);
-        updateExternalEngineStatus('Connection failed');
+        updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.ERROR);
       }
     }
 
@@ -1074,16 +1074,42 @@
     }
   }
 
+  // External Engine Status Constants
+  const EXTERNAL_ENGINE_STATUS = {
+    CONNECTED: 'Connected',
+    AUTHENTICATED: 'Authenticated',
+    SUBSCRIBED: 'Subscribed',
+    READY_LOCKED: 'Ready (Locked)',
+    READY_NOT_LOCKED: 'Ready (Not locked)',
+    DISCONNECTED: 'Disconnected',
+    ERROR: 'Error',
+    AUTH_FAILED: 'Auth failed'
+  };
+
   function updateExternalEngineStatus(status) {
     const element = document.getElementById(`${namespace}_external_status`);
     if (element) {
       element.textContent = status;
       
       // Update color based on status
-      if (status.includes('Ready') || status.includes('Connected') || status.includes('Authenticated') || status.includes('Subscribed')) {
+      const successStatuses = [
+        EXTERNAL_ENGINE_STATUS.READY_LOCKED,
+        EXTERNAL_ENGINE_STATUS.READY_NOT_LOCKED,
+        EXTERNAL_ENGINE_STATUS.CONNECTED,
+        EXTERNAL_ENGINE_STATUS.AUTHENTICATED,
+        EXTERNAL_ENGINE_STATUS.SUBSCRIBED
+      ];
+      
+      const errorStatuses = [
+        EXTERNAL_ENGINE_STATUS.ERROR,
+        EXTERNAL_ENGINE_STATUS.AUTH_FAILED,
+        EXTERNAL_ENGINE_STATUS.DISCONNECTED
+      ];
+      
+      if (successStatuses.includes(status)) {
         element.style.background = 'rgba(76, 175, 80, 0.2)';
         element.style.color = '#4caf50';
-      } else if (status.includes('Error') || status.includes('failed') || status.includes('Disconnected')) {
+      } else if (errorStatuses.includes(status)) {
         element.style.background = 'rgba(244, 67, 54, 0.2)';
         element.style.color = '#f44336';
       } else {
