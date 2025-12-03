@@ -116,6 +116,7 @@
       this.reconnectAttempts = 0;
       this.maxReconnectAttempts = 5;
       this.reconnectDelay = 1000;
+      this.connectionTimeout = null;
     }
 
     connect() {
@@ -123,7 +124,16 @@
         log(`Connecting to external engine at ${this.url}`);
         this.ws = new WebSocket(this.url);
 
+        // Set a connection timeout
+        this.connectionTimeout = setTimeout(() => {
+          if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+            log('Connection timeout - server may be unreachable');
+            this.ws.close();
+          }
+        }, 10000);
+
         this.ws.onopen = () => {
+          clearTimeout(this.connectionTimeout);
           log('External engine connected');
           this.isConnected = true;
           this.reconnectAttempts = 0;
@@ -184,11 +194,24 @@
         };
 
         this.ws.onerror = (error) => {
+          clearTimeout(this.connectionTimeout);
           console.error(`[${namespace}] External engine error:`, error);
+          
+          // Provide more helpful error messages
+          let errorMsg = 'Connection error';
+          if (this.url.startsWith('ws://') && window.location.protocol === 'https:') {
+            errorMsg = 'Mixed content error: Cannot connect to ws:// from https://. Use -allowallorigins flag or setup HTTPS proxy.';
+            log(errorMsg);
+          } else if (!this.isConnected) {
+            errorMsg = 'Failed to connect - server may be down or URL incorrect';
+            log(errorMsg);
+          }
+          
           updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.ERROR);
         };
 
         this.ws.onclose = () => {
+          clearTimeout(this.connectionTimeout);
           log('External engine disconnected');
           this.isConnected = false;
           this.isAuthenticated = false;
@@ -201,16 +224,20 @@
             const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
             log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.connect(), delay);
+          } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            log(`Max reconnection attempts (${this.maxReconnectAttempts}) reached. Please check server and refresh page.`);
           }
         };
       } catch (e) {
         console.error(`[${namespace}] Failed to connect to external engine:`, e);
+        log(`Connection failed: ${e.message}`);
         updateExternalEngineStatus(EXTERNAL_ENGINE_STATUS.ERROR);
       }
     }
 
     disconnect() {
       if (this.ws) {
+        clearTimeout(this.connectionTimeout);
         if (this.hasLock) {
           this.send('unlock');
         }

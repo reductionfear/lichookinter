@@ -19,11 +19,27 @@ var (
 	namespace = "chesshook-intermediary"
 	version   = "1"
 
-	addr     = flag.String("addr", "localhost:8080", "http service address")
-	upgrader = websocket.Upgrader{
+	addr            = flag.String("addr", "localhost:8080", "http service address")
+	allowAllOrigins = flag.Bool("allowallorigins", false, "whether to allow connections from any origin (for development only)")
+	upgrader        = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
+			if *allowAllOrigins {
+				return true
+			}
 			origin := r.Header.Get("Origin")
-			return origin == "https://www.chess.com" || origin == "https://lichess.org"
+			// Allow chess.com and lichess.org
+			if origin == "https://www.chess.com" || origin == "https://lichess.org" {
+				return true
+			}
+			// Allow localhost connections for development
+			if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "https://localhost") {
+				return true
+			}
+			// Allow if no origin (direct connection)
+			if origin == "" {
+				return true
+			}
+			return false
 		},
 	}
 	passKey           = randomPassKey()
@@ -310,6 +326,7 @@ func main() {
 	log.Print("Server is requesting authentication for read operations: ", *needsAuthForRead)
 	log.Print("Server is requesting authentication for write operations: ", *needsAuthForWrite)
 	log.Print("Server is bypassing authentication for localhost connections: ", *localhostBypass)
+	log.Print("Server is allowing all origins (development mode): ", *allowAllOrigins)
 	panic(http.ListenAndServe(*addr, nil))
 }
 
