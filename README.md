@@ -11,6 +11,7 @@ A simple server to run a chess engine and communicate with the chesshook userscr
     - `-authwrite <bool>`: whether the passkey is required for write access. default: true
     - `-authread <bool>`: whether the passkey is required for read access. default: false
     - `-localhostbypass <bool>`: whether the passkey is required for localhost connections. default: true
+    - `-allowallorigins <bool>`: whether to allow connections from any origin (for development only). default: false
     - `-uciargs <string>`: arguments to pass to the engine on startup, split with semicolons ";". Should look like "setoption name Skill Level value 20;setoption name Threads value 10"
 - Place the engine executable in the same folder as the server executable.
 - `./main -engine ./<name of engine>`
@@ -20,6 +21,7 @@ A simple server to run a chess engine and communicate with the chesshook userscr
     Server is requesting authentication for read operations: false
     Server is requesting authentication for write operations: true
     Server is bypassing authentication for localhost connections: true
+    Server is allowing all origins (development mode): false
     engine: Stockfish 15.1 by the Stockfish developers (see AUTHORS file)
     engine: id name Stockfish 15.1
     ...
@@ -35,6 +37,36 @@ A simple server to run a chess engine and communicate with the chesshook userscr
         - you should also see some messages like `New ws opened: 127.0.0.1:12345`, `recv: whoareyou`, and `recv: whatengine` in the console.
         - by default, you will only try to authenticate once your client recieves `autherr` from the server.
         - the client will not try to reconnect to server. you will need to refresh the page or change the engine option to reconnect.
+
+## WebSocket Connection and Origin Restrictions
+
+### Mixed Content Issues
+When connecting from HTTPS sites (like lichess.org) to a local WebSocket server using `ws://` (insecure), browsers block the connection due to mixed content security policies. There are several solutions:
+
+1. **For Development (Recommended)**: Run the server with `-allowallorigins` flag:
+   ```
+   ./main -engine ./stockfish -allowallorigins
+   ```
+   This disables origin checking entirely, allowing connections from any source. **Only use this for local development.**
+
+2. **Localhost Connections**: The server now automatically allows connections from `http://localhost` and `https://localhost` origins, even without the `-allowallorigins` flag.
+
+3. **Browser Configuration** (Not recommended for security reasons):
+   - Some browsers allow you to disable mixed content blocking temporarily
+   - Use a browser extension that bypasses mixed content restrictions
+   - Note: These approaches reduce your browser's security
+
+4. **Production Setup**: For production use, set up an HTTPS proxy (nginx, Apache, etc.) in front of the WebSocket server to avoid mixed content issues.
+
+### Allowed Origins
+By default, the server allows WebSocket connections from:
+- `https://www.chess.com`
+- `https://lichess.org`
+- `http://localhost` (any port)
+- `https://localhost` (any port)
+- Direct connections (no Origin header)
+
+Use the `-allowallorigins` flag to allow connections from any origin during development.
 
 ## Developer Usage
 More advanced users may find it helpful
